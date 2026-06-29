@@ -1,0 +1,59 @@
+name: AI PR Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review]
+  pull_request_review_request:
+    types: [created]
+
+jobs:
+  dify_ai_review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # 需要完整歷史以便進行 diff
+
+      - name: Extract PR Diff
+        id: get_diff
+        run: |
+          # 取得目前 PR 的 diff
+          git diff origin/${{ github.event.pull_request.base.ref }}...origin/${{ github.event.pull_request.head.ref }} > pr_diff.txt
+          echo "diff_path=pr_diff.txt" >> $GITHUB_ENV
+
+      - name: Send to Dify API & Get Response
+        id: dify_api
+        env:
+          DIFY_API_URL: "https://api.dify.ai/v1/workflows/run"
+          DIFY_API_KEY: ${{ secrets.DIFY_CODE_REVIEW_API_KEY }}
+        run: |
+          # 將 diff 轉換為 JSON 字串以避免轉義問題
+          DIFF_CONTENT=$(cat pr_diff.txt | jq -Rsa .)
+          PR_URL="https://github.com/${{ github.repository }}/pull/${{ github.event.pull_request.number }}"
+          
+          # 呼叫 Dify API
+          RESPONSE=$(curl -s -X POST "$DIFY_API_URL" \
+            -H "Authorization: Bearer $DIFY_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"inputs\": {
+                \"pr_diff\": $DIFF_CONTENT,
+                \"pr_url\": \"$PR_URL\"
+              },
+              \"response_mode\": \"blocking\",
+              \"user\": \"github-actions-bot\"
+            }")
+            
+          # 解析 Dify 回傳的 JSON，提取輸出的內容 (假設你在 Dify 設定的輸出變數名為 text)
+          REVIEW_COMMENT=$(echo "$RESPONSE" | jq -r '.data.outputs.text // "未能產生審查結果或發生錯誤。"')
+          echo "$REVIEW_COMMENT" > review_result.md
+
+      - name: Comment on GitHub PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # 使用 GitHub CLI 在 PR 上留下 Markdown 評論
+          gh pr comment ${{ github.event.pull_request.number }} --body-file review_result.md
