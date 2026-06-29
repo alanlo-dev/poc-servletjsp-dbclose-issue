@@ -2,9 +2,8 @@ name: AI PR Code Review
 
 on:
   pull_request:
-    types: [opened, synchronize, ready_for_review]
-  pull_request_review_request:
-    types: [created]
+    # 新增 review_requested 嚟取代原本無效嘅 event
+    types: [opened, synchronize, ready_for_review, review_requested]
 
 jobs:
   dify_ai_review:
