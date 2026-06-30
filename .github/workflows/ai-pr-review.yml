@@ -2,44 +2,121 @@ name: AI PR Code Review
 
 on:
   pull_request:
-    # 新增 review_requested 嚟取代原本無效嘅 event
     types: [opened, synchronize, ready_for_review, review_requested]
 
+permissions:
+  contents: read
+  pull-requests: write
+
 jobs:
-  dify_ai_review:
+  dify-ai-review:
+    if: ${{ !github.event.pull_request.draft }}
     runs-on: ubuntu-latest
-    timeout-minutes: 10
-    
+    timeout-minutes: 15
+
+    env:
+      DIFY_API_URL: ${{ secrets.DIFY_API_URL }}
+      DIFY_API_KEY: ${{ secrets.DIFY_CODE_REVIEW_API_KEY }}
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # 需要完整歷史以便進行 diff
+          fetch-depth: 0
 
-      - name: Extract PR Diff
-        id: get_diff
+      - name: Validate required secrets
+        shell: bash
         run: |
-          # 取得目前 PR 的 diff
-          git diff origin/${{ github.event.pull_request.base.ref }}...origin/${{ github.event.pull_request.head.ref }} > pr_diff.txt
-          echo "diff_path=pr_diff.txt" >> $GITHUB_ENV
+          set -euo pipefail
 
-      - name: Send to Dify API & Get Response
-        id: dify_api
-        env:
-          DIFY_API_URL: ${{ secrets.DIFY_API_URL }}
-          DIFY_API_KEY: ${{ secrets.DIFY_CODE_REVIEW_API_KEY }}
+          if [ -z "${DIFY_API_URL:-}" ]; then
+            echo "Missing secret: DIFY_API_URL"
+            exit 1
+          fi
+
+          if [ -z "${DIFY_API_KEY:-}" ]; then
+            echo "Missing secret: DIFY_CODE_REVIEW_API_KEY"
+            exit 1
+          fi
+
+          CLEAN_URL="$(printf '%s' "$DIFY_API_URL" | tr -d '\r\n[:space:]')"
+          echo "DIFY_API_URL=$CLEAN_URL" >> "$GITHUB_ENV"
+
+      - name: Fetch base branch
+        shell: bash
         run: |
-          set -eo pipefail
+          set -euo pipefail
+          git fetch origin "${{ github.event.pull_request.base.ref }}" --depth=1
+          git fetch origin "${{ github.event.pull_request.head.ref }}" --depth=1 || true
+
+      - name: Build PR diff
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BASE_REF="origin/${{ github.event.pull_request.base.ref }}"
+          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+
+          git diff \
+            --unified=3 \
+            --no-color \
+            "$BASE_REF...$HEAD_SHA" \
+            -- '*.java' '*.jsp' '*.xml' '*.properties' '*.yml' '*.yaml' \
+            > pr_diff.txt
+
+          echo "Changed lines:"
+          wc -l pr_diff.txt
+
+          if [ ! -s pr_diff.txt ]; then
+            echo "No relevant code changes found." > review_result.md
+            echo "SKIP_REVIEW=true" >> "$GITHUB_ENV"
+          else
+            echo "SKIP_REVIEW=false" >> "$GITHUB_ENV"
+          fi
+
+      - name: Trim oversized diff
+        if: env.SKIP_REVIEW == 'false'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          MAX_BYTES=120000
+          FILE_SIZE=$(wc -c < pr_diff.txt)
+
+          echo "Diff bytes: $FILE_SIZE"
+
+          if [ "$FILE_SIZE" -gt "$MAX_BYTES" ]; then
+            echo "Diff too large, truncating to first $MAX_BYTES bytes."
+            head -c "$MAX_BYTES" pr_diff.txt > pr_diff_trimmed.txt
+            mv pr_diff_trimmed.txt pr_diff.txt
+            echo "" >> pr_diff.txt
+            echo "[TRUNCATED: diff was too large for one review request]" >> pr_diff.txt
+          fi
+
+      - name: Call Dify API
+        if: env.SKIP_REVIEW == 'false'
+        shell: bash
+        run: |
+          set -euo pipefail
 
           PR_URL="https://github.com/${{ github.repository }}/pull/${{ github.event.pull_request.number }}"
+          PR_TITLE="${{ github.event.pull_request.title }}"
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+          REPO_NAME="${{ github.repository }}"
 
           JSON_PAYLOAD=$(jq -n \
             --arg diff "$(cat pr_diff.txt)" \
-            --arg url "$PR_URL" \
+            --arg pr_url "$PR_URL" \
+            --arg pr_title "$PR_TITLE" \
+            --arg pr_number "$PR_NUMBER" \
+            --arg repo_name "$REPO_NAME" \
             '{
               inputs: {
                 pr_diff: $diff,
-                pr_url: $url
+                pr_url: $pr_url,
+                pr_title: $pr_title,
+                pr_number: $pr_number,
+                repo_name: $repo_name
               },
               response_mode: "blocking",
               user: "github-actions-bot"
@@ -54,20 +131,71 @@ jobs:
             -d "$JSON_PAYLOAD")
 
           echo "HTTP_CODE=$HTTP_CODE"
-          cat dify_response.json
 
-          if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
+          if [ ! -f dify_response.json ]; then
+            echo "Dify response file was not created."
             exit 1
           fi
 
-          REVIEW_COMMENT=$(jq -r '.data.outputs.review_result // .data.outputs.text // "未能產生審查結果或發生錯誤。"' dify_response.json)
+          echo "First 1000 chars of Dify response:"
+          head -c 1000 dify_response.json || true
+          echo
+
+          if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
+            echo "Dify API failed with HTTP $HTTP_CODE"
+            cat dify_response.json
+            exit 1
+          fi
+
+          if ! jq empty dify_response.json >/dev/null 2>&1; then
+            echo "Dify returned non-JSON response:"
+            cat dify_response.json
+            exit 1
+          fi
+
+          REVIEW_COMMENT=$(jq -r '
+            .data.outputs.review_result
+            // .data.outputs.text
+            // .data.error
+            // .message
+            // "未能產生審查結果或發生錯誤。"
+          ' dify_response.json)
+
           printf "%s\n" "$REVIEW_COMMENT" > review_result.md
 
-
-
-      - name: Comment on GitHub PR
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Add review header
+        shell: bash
         run: |
-          # 使用 GitHub CLI 在 PR 上留下 Markdown 評論
-          gh pr comment ${{ github.event.pull_request.number }} --body-file review_result.md
+          set -euo pipefail
+
+          if [ ! -f review_result.md ]; then
+            echo "未產生 review_result.md" > review_result.md
+          fi
+
+          {
+            echo "## AI Code Review"
+            echo
+            echo "- PR: #${{ github.event.pull_request.number }}"
+            echo "- Repo: ${{ github.repository }}"
+            echo "- Trigger: ${{ github.event.action }}"
+            echo
+            cat review_result.md
+          } > review_result_with_header.md
+
+          mv review_result_with_header.md review_result.md
+
+      - name: Find existing AI review comment
+        id: find_comment
+        uses: peter-evans/find-comment@v3
+        with:
+          issue-number: ${{ github.event.pull_request.number }}
+          comment-author: 'github-actions[bot]'
+          body-includes: '## AI Code Review'
+
+      - name: Create or update PR comment
+        uses: peter-evans/create-or-update-comment@v4
+        with:
+          comment-id: ${{ steps.find_comment.outputs.comment-id }}
+          issue-number: ${{ github.event.pull_request.number }}
+          body-path: review_result.md
+          edit-mode: replace
