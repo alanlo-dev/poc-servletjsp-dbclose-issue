@@ -27,26 +27,44 @@ jobs:
         id: dify_api
         env:
           DIFY_API_URL: "https://api.dify.ai/v1/workflows/run"
-          DIFY_API_KEY: ${{ secrets.DIFY_CODE_REVIEW_API_KEY }}
+          DIFY_API_KEY: ${{ secrets.DIFY_AI_REVIEW_API_KEY }}
         run: |
-          # 將 diff 轉換為 JSON 字串以避免轉義問題
-          DIFF_CONTENT=$(cat pr_diff.txt | jq -Rsa .)
+          # 1. 檢查 diff 檔案是否存在及是否有內容
+          if [ ! -s pr_diff.txt ]; then
+            echo "pr_diff.txt is empty or does not exist. Skipping Dify API call."
+            echo "No changes found." > review_result.md
+            exit 0
+          fi
+
           PR_URL="https://github.com/${{ github.repository }}/pull/${{ github.event.pull_request.number }}"
           
-          # 呼叫 Dify API
-          RESPONSE=$(curl -s -X POST "$DIFY_API_URL" \
+          # 2. 使用 jq 安全地構建 JSON Payload，避免轉義問題
+          JSON_PAYLOAD=$(jq -n \
+            --arg diff "$(cat pr_diff.txt)" \
+            --arg url "$PR_URL" \
+            '{
+              "inputs": {
+                "pr_diff": $diff,
+                "pr_url": $url
+              },
+              "response_mode": "blocking",
+              "user": "github-actions-bot"
+            }')
+
+          # 3. 呼叫 Dify API，加上 -f 參數，如果有 HTTP 錯誤會直接失敗
+          echo "Sending request to Dify API..."
+          RESPONSE=$(curl -s -f -X POST "$DIFY_API_URL" \
             -H "Authorization: Bearer $DIFY_API_KEY" \
             -H "Content-Type: application/json" \
-            -d "{
-              \"inputs\": {
-                \"pr_diff\": $DIFF_CONTENT,
-                \"pr_url\": \"$PR_URL\"
-              },
-              \"response_mode\": \"blocking\",
-              \"user\": \"github-actions-bot\"
-            }")
+            -d "$JSON_PAYLOAD") || {
+              echo "Error: Dify API call failed. Response: $RESPONSE"
+              exit 1
+            }
             
-          # 解析 Dify 回傳的 JSON，提取輸出的內容 (假設你在 Dify 設定的輸出變數名為 text)
+          # 4. 打印 API 回應以便除錯 (可選)
+          echo "Dify API Response: $RESPONSE"
+            
+          # 5. 解析 Dify 回傳的 JSON
           REVIEW_COMMENT=$(echo "$RESPONSE" | jq -r '.data.outputs.text // "未能產生審查結果或發生錯誤。"')
           echo "$REVIEW_COMMENT" > review_result.md
 
