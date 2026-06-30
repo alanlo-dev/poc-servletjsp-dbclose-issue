@@ -2,7 +2,7 @@ name: AI PR Code Review
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review, review_requested]
+    types: [opened, synchronize, reopened]
     paths:
       - '**/*.java'
       - '**/*.jsp'
@@ -10,6 +10,11 @@ on:
       - '**/*.properties'
       - '**/*.yml'
       - '**/*.yaml'
+      - '.github/workflows/**'
+
+concurrency:
+  group: ai-pr-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
