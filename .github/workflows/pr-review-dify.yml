@@ -10,7 +10,6 @@ on:
       - '**/*.properties'
       - '**/*.yml'
       - '**/*.yaml'
-      - '.github/workflows/**'
 
 permissions:
   contents: read
@@ -164,13 +163,7 @@ jobs:
             exit 1
           fi
 
-          REVIEW_COMMENT=$(jq -r '
-            .data.outputs.review_result
-            // .data.outputs.text
-            // .data.error
-            // .message
-            // "未能產生審查結果或發生錯誤。"
-          ' dify_response.json)
+          REVIEW_COMMENT=$(jq -r '.data.outputs.review_result' dify_response.json)
 
           printf "%s\n" "$REVIEW_COMMENT" > review_result.md
 
@@ -180,7 +173,7 @@ jobs:
           set -euo pipefail
 
           if [ ! -f review_result.md ]; then
-            echo "未產生 review_result.md" > review_result.md
+            echo "review_result.md not found" > review_result.md
           fi
 
           {
