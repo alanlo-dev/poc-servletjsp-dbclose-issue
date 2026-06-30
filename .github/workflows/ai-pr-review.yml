@@ -27,7 +27,7 @@ jobs:
         id: dify_api
         env:
           DIFY_API_URL: "https://api.dify.ai/v1/workflows/run"
-          DIFY_API_KEY: ${{ secrets.DIFY_AI_REVIEW_API_KEY }}
+          DIFY_API_KEY: ${{ secrets.DIFY_CODE_REVIEW_API_KEY }}
         run: |
           # 1. 檢查 diff 檔案是否存在及是否有內容
           if [ ! -s pr_diff.txt ]; then
