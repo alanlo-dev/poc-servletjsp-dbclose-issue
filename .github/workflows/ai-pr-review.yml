@@ -65,7 +65,7 @@ jobs:
           echo "Dify API Response: $RESPONSE"
             
           # 5. 解析 Dify 回傳的 JSON
-          REVIEW_COMMENT=$(echo "$RESPONSE" | jq -r '.data.outputs.text // "未能產生審查結果或發生錯誤。"')
+          REVIEW_COMMENT=$(echo "$RESPONSE" | jq -r '.data.outputs.review_result // "未能產生審查結果或發生錯誤。"')
           echo "$REVIEW_COMMENT" > review_result.md
 
       - name: Comment on GitHub PR
