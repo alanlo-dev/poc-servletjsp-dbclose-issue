@@ -2,7 +2,15 @@ name: AI PR Code Review
 
 on:
   pull_request:
-    types: [opened, synchronize, ready_for_review, review_requested]
+    types: [opened, synchronize, reopened, ready_for_review, review_requested]
+    paths:
+      - '**/*.java'
+      - '**/*.jsp'
+      - '**/*.xml'
+      - '**/*.properties'
+      - '**/*.yml'
+      - '**/*.yaml'
+      - '.github/workflows/**'
 
 permissions:
   contents: read
@@ -15,24 +23,20 @@ jobs:
     timeout-minutes: 15
 
     env:
-      DIFY_API_URL: ${{ secrets.DIFY_API_URL }}
+      DIFY_API_URL: https://api.dify.ai/v1/workflows/run
       DIFY_API_KEY: ${{ secrets.DIFY_CODE_REVIEW_API_KEY }}
 
     steps:
-      - name: Checkout repository
+      - name: Checkout PR head
         uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
 
       - name: Validate required secrets
         shell: bash
         run: |
           set -euo pipefail
-
-          if [ -z "${DIFY_API_URL:-}" ]; then
-            echo "Missing secret: DIFY_API_URL"
-            exit 1
-          fi
 
           if [ -z "${DIFY_API_KEY:-}" ]; then
             echo "Missing secret: DIFY_CODE_REVIEW_API_KEY"
@@ -42,25 +46,32 @@ jobs:
           CLEAN_URL="$(printf '%s' "$DIFY_API_URL" | tr -d '\r\n[:space:]')"
           echo "DIFY_API_URL=$CLEAN_URL" >> "$GITHUB_ENV"
 
-      - name: Fetch base branch
+      - name: Fetch base commit
         shell: bash
         run: |
           set -euo pipefail
-          git fetch origin "${{ github.event.pull_request.base.ref }}" --depth=1
-          git fetch origin "${{ github.event.pull_request.head.ref }}" --depth=1 || true
+
+          BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+
+          echo "BASE_SHA=$BASE_SHA"
+          echo "HEAD_SHA=$HEAD_SHA"
+
+          git fetch --no-tags --depth=1 origin "$BASE_SHA" || true
+          git fetch --no-tags --depth=1 origin "$HEAD_SHA" || true
 
       - name: Build PR diff
         shell: bash
         run: |
           set -euo pipefail
 
-          BASE_REF="origin/${{ github.event.pull_request.base.ref }}"
+          BASE_SHA="${{ github.event.pull_request.base.sha }}"
           HEAD_SHA="${{ github.event.pull_request.head.sha }}"
 
           git diff \
             --unified=3 \
             --no-color \
-            "$BASE_REF...$HEAD_SHA" \
+            "$BASE_SHA" "$HEAD_SHA" \
             -- '*.java' '*.jsp' '*.xml' '*.properties' '*.yml' '*.yaml' \
             > pr_diff.txt
 
